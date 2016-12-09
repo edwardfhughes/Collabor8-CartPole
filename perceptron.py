@@ -1,14 +1,28 @@
 import tensorflow as tf
 
 
-# Create model
-def multilayer_perceptron(x, weights, biases):
-    # Hidden layer with sigmoid activation
-    layer_1 = tf.add(tf.matmul(x, weights['h1']), biases['b1'])
-    layer_1 = tf.nn.sigmoid(layer_1)
-    # Hidden layer with sigmoid activation
-    layer_2 = tf.add(tf.matmul(layer_1, weights['h2']), biases['b2'])
-    layer_2 = tf.nn.sigmoid(layer_2)
-    # Output layer with linear activation
-    out_layer = tf.matmul(layer_2, weights['out']) + biases['out']
-    return out_layer
+class MultilayerPerceptron:
+
+    def __init__(self, n_input, n_hidden_1, n_hidden_2, n_output):
+        # Store layers weight & bias
+        self.weights = {
+            'h1': tf.Variable(tf.random_normal([n_input, n_hidden_1], stddev=1)),
+            'h2': tf.Variable(tf.random_normal([n_hidden_1, n_hidden_2], stddev=1)),
+            'out': tf.Variable(tf.random_normal([n_hidden_2, n_output], stddev=1))
+        }
+        self.biases = {
+            'b1': tf.Variable(tf.random_uniform([n_hidden_1], minval=-0.1, maxval=0.1)),
+            'b2': tf.Variable(tf.random_uniform([n_hidden_2], minval=-0.1, maxval=0.1)),
+            'out': tf.Variable(tf.random_uniform([n_output], minval=-0.1, maxval=0.1))
+        }
+
+    def evaluate(self, x):
+        # Hidden layer with sigmoid activation
+        layer_1 = tf.add(tf.matmul(x, self.weights['h1']), self.biases['b1'])
+        layer_1 = tf.nn.softmax(layer_1)
+        # Hidden layer with sigmoid activation
+        layer_2 = tf.add(tf.matmul(layer_1, self.weights['h2']), self.biases['b2'])
+        layer_2 = tf.nn.softmax(layer_2)
+        # Output layer with linear activation
+        out_layer = tf.matmul(layer_2, self.weights['out']) + self.biases['out']
+        return out_layer
