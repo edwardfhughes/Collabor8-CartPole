@@ -8,29 +8,27 @@ import random
 import copy
 import gym
 
-
-def build_state(features):
-    return int("".join(map(lambda feature: str(int(feature)), features)))
-
 # env = environment.ShoprEnv()
 env = gym.make('CartPole-v0')
 reset = tf.reset_default_graph()
 
 # Parameters
-learning_rate = 0.2
-num_episodes = 501
-initial_eps = 0.5
-discount = 0.9
-batch_size = 5
-buffer = 30
+learning_rate = 0.00001
+num_episodes = 1001
+initial_eps = 0.1
+discount = 0.99
+batch_size = 10
+buffer = 40
 log_freq = 10
 num_runs = 1
+reg_constant = 0
+grad_update_freq = 50
 
 # Network Parameters
-n_hidden_1 = 20 # 1st layer number of nodes
-n_hidden_2 = 20 # 2nd layer number of nodes
-n_input = 4 # input layer (basket state)
-n_output = 5 # output layer (q values for actions)
+n_hidden_1 = 8 # 1st layer number of nodes
+n_hidden_2 = 16 # 2nd layer number of nodes
+n_input = 4 # input layer (state)
+n_output = 2 # output layer (q values for actions)
 
 # TO DO | implement more occasional updating of weights
 #       | check this is okay with OpenAI gym
@@ -46,10 +44,17 @@ current_output = model.evaluate(inputs[0])
 # current_output = lstm_network.lstm_network(inputs, weights, biases)
 target_output = tf.placeholder(shape=[1,n_output],dtype=tf.float32)
 
-# Define loss and trainer
-loss = tf.reduce_sum(tf.square(target_output - current_output))
+# Define loss (with regularization) and trainer
+tvars = tf.trainable_variables()
+reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+loss = tf.reduce_sum(tf.square(target_output - current_output)) + reg_constant * sum(reg_losses)
 trainer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-updateModel = trainer.minimize(loss)
+W1Grad = tf.placeholder(tf.float32,name="batch_grad1")
+W2Grad = tf.placeholder(tf.float32,name="batch_grad2")
+batchGrad = [W1Grad,W2Grad]
+newGrads = tf.gradients(loss, tvars)
+updateGrads = trainer.apply_gradients(zip(batchGrad, tvars))
+# updateModel = trainer.minimize(loss)
 
 init = tf.initialize_all_variables()
 rewardToPlot = []
@@ -64,14 +69,19 @@ for alpha in range(num_runs):
     rAggList = []
     lossAggList = []
     lossList = []
+    stepUntilDoneList = []
     # Stores tuples of (S, A, R, S')
     # For prioritized experience replay
     replay = []
     priority = []
     h = 0
     eps = initial_eps
+    grad_count = 0
     with tf.Session() as sess:
         sess.run(init)
+        gradBuffer = sess.run(tvars)
+        for ix, grad in enumerate(gradBuffer):
+            gradBuffer[ix] = grad * 0
         for i in range(num_episodes):
             # learning_rate = learning_rate - learning_rate / (num_episodes)
             # Reset environment and get first new observation
@@ -82,19 +92,24 @@ for alpha in range(num_runs):
             j = 0
             # The q-network
             while j < 99:
+                # env.render()
                 j+=1
                 # Choose an action greedily (with e chance of random action) from the Q-network
                 q = sess.run([current_output], feed_dict={inputs[0]: [s]})[0]
                 a = np.argmax(q)
                 if np.random.rand(1) < eps:
-                    a = env.sample_action()
+                    # a = env.sample_action()
+                    a = env.action_space.sample()
                 # Get new state and reward from environment
                 s1,r,d,_ = env.step(a)
                 if d == True:
                     # Reduce chance of random action as we train the model
-                    # rTotal += r
+                    r = -50
                     eps -= initial_eps / (num_episodes - 50)
                     eps = max(eps, 0)
+                    replay.append((s, a, r, s1))
+                    priority.append(0.001)
+                    stepUntilDoneList.append(j)
                     break
                 if len(replay) < buffer:  # if buffer not filled, add to it
                     replay.append((s, a, r, s1))
@@ -112,8 +127,9 @@ for alpha in range(num_runs):
                 s = copy.copy(s1)
                 rTotal += r
                 # randomly sample our experience replay memory
-                minibatch_indices = np.random.choice(range(len(replay)), batch_size,
-                                                     p=[np.sqrt(a)/sum([np.sqrt(b) for b in priority]) for a in priority])
+                # minibatch_indices = np.random.choice(range(len(replay)), batch_size,
+                                                     # p=[np.sqrt(a)/sum([np.sqrt(b) for b in priority]) for a in priority])
+                minibatch_indices = np.random.choice(range(len(replay)), batch_size)
                 for index in minibatch_indices:
                     memory = replay[index]
                     s_mem, a_mem, r_mem, s1_mem = memory
@@ -124,14 +140,22 @@ for alpha in range(num_runs):
                     max_q_prime = np.max(q_prime)
                     target_q = q
                     # Q-learning
-                    # target_q[a_mem] = np.clip(r_mem + discount * max_q_prime,-1,1)
+                    target_q[a_mem] = r_mem + discount * max_q_prime
                     # print(target_q)
                     # SARSA
-                    target_q[a_mem] = np.clip(r_mem + discount * q_prime[a_mem],-1,1)
+                    # target_q[a_mem] = np.clip(r_mem + discount * q_prime[a_mem],-1,1)
                     # Train our network using target and predicted Q values
-                    _, loss_val = sess.run([updateModel,loss],feed_dict={inputs[0]: [s_mem],target_output: [target_q]})
+                    loss_val = sess.run(loss, feed_dict={inputs[0]: [s_mem],target_output: [target_q]})
+                    tGrad = sess.run(newGrads,feed_dict={inputs[0]: [s_mem], target_output: [target_q]})
                     priority[index] = abs(loss_val)
                     lossTotal += loss_val
+                    for ix, grad in enumerate(tGrad):
+                        gradBuffer[ix] += grad
+                    grad_count += 1
+                    if grad_count % grad_update_freq == 0:
+                        sess.run(updateGrads, feed_dict={W1Grad: gradBuffer[0], W2Grad: gradBuffer[1]})
+                        for ix, grad in enumerate(gradBuffer):
+                            gradBuffer[ix] = grad * 0
                 lossTotal /= batch_size
             sList.append(s)
             jList.append(j)
@@ -142,19 +166,23 @@ for alpha in range(num_runs):
                 lossAggList.append(np.mean(lossList[-log_freq:]))
                 print("Average reward after " + str(i) + " episodes = " + str(np.mean(rList[-log_freq:])))
                 print("Average loss after " + str(i) + " episodes = " + str(np.mean(lossList[-log_freq:])))
-                print("Average basket after " + str(i) + " episodes = " + str(np.mean(sList[-log_freq:],axis=0)))
+                # print("Average basket after " + str(i) + " episodes = " + str(np.mean(sList[-log_freq:],axis=0)))
+                # print("Average steps until done after " + str(i) + " episodes = " + str(np.mean(stepUntilDoneList[-log_freq:])))
                 # print("Epsilon after " + str(i) + " episodes = " + str(eps))
         # Evaluation
         print('Evaluating model...')
         s = copy.copy(env.reset())
+        j = 0
         while j < 99:
+            # env.render()
             j += 1
             q = sess.run([current_output], feed_dict={inputs[0]: [s]})[0]
-            print(q)
+            # print(q)
             a = np.argmax(q)
             s1, r, d, _ = env.step(a)
-            print(str(s) +',' + str(a) + '->' + str(s1))
+            # print(str(s) +',' + str(a) + '->' + str(s1))
             if d:
+                print('failed after ' + str(j) + ' timesteps')
                 break
             s = copy.copy(s1)
     rewardToPlot.append(rAggList)
