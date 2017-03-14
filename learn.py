@@ -12,11 +12,13 @@ import gym
 env = gym.make('CartPole-v0')
 reset = tf.reset_default_graph()
 
+np.random.seed(0)
+
 # Parameters
-learning_rate = 0.00001
-num_episodes = 1001
-initial_eps = 0.1
-discount = 0.99
+learning_rate = 0.0001
+num_episodes = 501
+initial_eps = 1
+discount = 0.9
 batch_size = 10
 buffer = 40
 log_freq = 10
@@ -25,15 +27,10 @@ reg_constant = 0
 grad_update_freq = 50
 
 # Network Parameters
-n_hidden_1 = 8 # 1st layer number of nodes
-n_hidden_2 = 16 # 2nd layer number of nodes
+n_hidden_1 = 20 # 1st layer number of nodes
+n_hidden_2 = 20 # 2nd layer number of nodes
 n_input = 4 # input layer (state)
 n_output = 2 # output layer (q values for actions)
-
-# TO DO | implement more occasional updating of weights
-#       | check this is okay with OpenAI gym
-#       | work out what's wrong with this environment
-#       | implement multi-agent RL (with noisy backprop)
 
 model = perceptron.MultilayerPerceptron(n_input, n_hidden_1, n_hidden_2, n_output)
 inputs = [tf.placeholder(shape=[1, n_input], dtype=tf.float32)]
@@ -49,10 +46,13 @@ tvars = tf.trainable_variables()
 reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 loss = tf.reduce_sum(tf.square(target_output - current_output)) + reg_constant * sum(reg_losses)
 trainer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+# frozen network for stability
 W1Grad = tf.placeholder(tf.float32,name="batch_grad1")
 W2Grad = tf.placeholder(tf.float32,name="batch_grad2")
-batchGrad = [W1Grad,W2Grad]
-newGrads = tf.gradients(loss, tvars)
+WoutGrad = tf.placeholder(tf.float32,name="batch_grad3")
+batchGrad = [W1Grad,W2Grad,WoutGrad]
+# ignore hidden weights which it somehow knows we defined
+newGrads = tf.gradients(loss, tvars)[0:2]
 updateGrads = trainer.apply_gradients(zip(batchGrad, tvars))
 # updateModel = trainer.minimize(loss)
 
@@ -91,7 +91,7 @@ for alpha in range(num_runs):
             d = False
             j = 0
             # The q-network
-            while j < 99:
+            while j < 10000:
                 # env.render()
                 j+=1
                 # Choose an action greedily (with e chance of random action) from the Q-network
@@ -140,20 +140,22 @@ for alpha in range(num_runs):
                     max_q_prime = np.max(q_prime)
                     target_q = q
                     # Q-learning
-                    target_q[a_mem] = r_mem + discount * max_q_prime
+                    target_q[a_mem] = np.clip(r_mem + discount * max_q_prime,-1,1)
                     # print(target_q)
                     # SARSA
                     # target_q[a_mem] = np.clip(r_mem + discount * q_prime[a_mem],-1,1)
                     # Train our network using target and predicted Q values
-                    loss_val = sess.run(loss, feed_dict={inputs[0]: [s_mem],target_output: [target_q]})
-                    tGrad = sess.run(newGrads,feed_dict={inputs[0]: [s_mem], target_output: [target_q]})
+                    # why do we have to do these sequentially?
+                    tGrad = sess.run(newGrads, feed_dict={inputs[0]: [s_mem], target_output: [target_q]})
+                    loss_val = sess.run(loss, feed_dict={inputs[0]: [s_mem], target_output: [target_q]})
                     priority[index] = abs(loss_val)
                     lossTotal += loss_val
                     for ix, grad in enumerate(tGrad):
+                        # accumulate the gradients
                         gradBuffer[ix] += grad
                     grad_count += 1
                     if grad_count % grad_update_freq == 0:
-                        sess.run(updateGrads, feed_dict={W1Grad: gradBuffer[0], W2Grad: gradBuffer[1]})
+                        sess.run(updateGrads, feed_dict={W1Grad: gradBuffer[0], W2Grad: gradBuffer[1], WoutGrad: gradBuffer[2]})
                         for ix, grad in enumerate(gradBuffer):
                             gradBuffer[ix] = grad * 0
                 lossTotal /= batch_size
@@ -173,7 +175,7 @@ for alpha in range(num_runs):
         print('Evaluating model...')
         s = copy.copy(env.reset())
         j = 0
-        while j < 99:
+        while j < 10000:
             # env.render()
             j += 1
             q = sess.run([current_output], feed_dict={inputs[0]: [s]})[0]
