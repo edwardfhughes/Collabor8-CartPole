@@ -15,7 +15,7 @@ class MultilayerPerceptron:
             'b2': tf.Variable(tf.zeros([n_hidden_2])),
             'out': tf.Variable(tf.zeros([n_output]))
         }
-        self.reg = 0.001
+        self.reg = 0
 
     def evaluate(self, x):
         # Hidden layer with tanh activation

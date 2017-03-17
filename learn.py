@@ -3,6 +3,13 @@ import tensorflow as tf
 import perceptron
 import matplotlib.pyplot as plt
 import gym
+import sys
+import subprocess
+
+# Prevent sleeping
+if 'darwin' in sys.platform:
+    print('Running \'caffeinate\' on MacOSX to prevent the system from sleeping')
+    subprocess.Popen('caffeinate')
 
 # Import CartPole environment
 env = gym.make('CartPole-v0')
@@ -11,26 +18,28 @@ env = gym.make('CartPole-v0')
 tf.reset_default_graph()
 
 # Parameters
-# Needs to be large enough to make progress
-learning_rate = 0.01
-num_episodes = 1001
+# Needs to be large enough to make progress, but small enough for stability
+learning_rate = 0.005
+num_episodes = 1501
 # Encourage exploring initially
 initial_eps = 0.5
 # Needs to be large to make progress
 discount_factor = 0.99
 batch_size = 100
-# More chance of IID observations with big buffer
-buffer_size = 10000
+# Need big enough buffer for IID, but not so big that it triggers catastrophic forgetting
+buffer_size = 500
 log_freq = 10
-visualisation_freq = 50
-num_runs = 1
+visualisation_freq = 10
+visualise = False
+num_runs = 12
 # Don't set this too high, or else outliers skew the success
-max_episode_length = 500
+max_episode_length = 200
+target_performance = 195
 
 # Network Parameters
 # Needs high enough capacity, but small enough to permit efficient fitting
-n_hidden_1 = 50 # 1st layer number of nodes
-n_hidden_2 = 50 # 2nd layer number of nodes
+n_hidden_1 = 30 # 1st layer number of nodes
+n_hidden_2 = 30 # 2nd layer number of nodes
 n_input = 4 # input layer (state)
 n_output = 2 # output layer (q values for actions)
 
@@ -52,7 +61,7 @@ init = tf.initialize_all_variables()
 rewardToPlot = []
 
 for alpha in range(num_runs):
-    print("Run # = {}".format(str(alpha)))
+    print("Run number {} of {}".format(str(alpha) + 1, str(num_runs)))
     # Create lists to contain total rewards per episode
     rList = []
     rAggList = []
@@ -66,8 +75,8 @@ for alpha in range(num_runs):
     with tf.Session() as sess:
         sess.run(init)
         for i in range(num_episodes):
-            # anneal epsilon
-            eps = max(eps - (initial_eps / 100 ), 0.05)
+            # Anneal epsilon
+            eps = max(eps - (initial_eps / 500 ), 0.05)
             # Reset environment and get first new observation
             s = env.reset()
             rTotal = 0
@@ -75,11 +84,9 @@ for alpha in range(num_runs):
             j = 0
             # The q-network
             while j < max_episode_length:
-                if i % visualisation_freq == 0:
+                if i % visualisation_freq == 0 and visualise:
                     env.render()
                 j+=1
-                if j == max_episode_length:
-                    print('hit the buffers')
                 # Choose an action greedily from the Q-network
                 q = sess.run(current_output, feed_dict={inputs: [s]})[0]
                 a = np.argmax(q)
@@ -126,13 +133,14 @@ for alpha in range(num_runs):
             if i % log_freq == 0:
                 rAggList.append(np.mean(rList[-log_freq:]))
                 print("Average reward after " + str(i) + " episodes = " + str(np.mean(rList[-log_freq:])))
-            if i > 100 and np.mean(rList[-100:]) > 200:
-                print("Mission complete after {} episodes! The average over the last 100 was {}. Visualising...".\
+            if i > 100 and np.mean(rList[-100:]) > target_performance:
+                print("Mission complete after {} episodes! The average over the last 100 was {}.".\
                     format(i, np.mean(rList[-100:])))
                 s = env.reset()
                 j = 0
                 while j < max_episode_length:
-                    env.render()
+                    if visualise:
+                        env.render()
                     j += 1
                     if j == max_episode_length:
                         print("Pole did not fall in first {} steps".format(max_episode_length))
@@ -146,9 +154,29 @@ for alpha in range(num_runs):
                         break
                     s = sPrime
                 break
+            if i == num_episodes - 1:
+                print("*** Mission failed! ***")
+                s = env.reset()
+                j = 0
+                while j < max_episode_length:
+                    if visualise:
+                        env.render()
+                    j += 1
+                    if j == max_episode_length:
+                        print("Pole did not fall in first {} steps".format(max_episode_length))
+                    # Choose an action greedily from the Q-network
+                    q = sess.run(current_output, feed_dict={inputs: [s]})[0]
+                    a = np.argmax(q)
+                    # Get new state and reward from environment
+                    sPrime, r, d, _ = env.step(a)
+                    if d:
+                        print("Pole fell on step {}".format(j))
+                        break
+                    s = sPrime
     rewardToPlot.append(rAggList)
 
-plt.plot(np.mean(rewardToPlot,axis=0))
+# Thanks http://stackoverflow.com/questions/18296755/python-max-function-using-key-and-lambda-expression
+plt.plot([np.mean([x[i] for x in rewardToPlot if len(x) > i]) for i in range(len(max(rewardToPlot, key=len)))])
 plt.savefig( 'reward.png' )
 
 plt.clf()
